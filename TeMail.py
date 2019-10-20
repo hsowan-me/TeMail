@@ -5,7 +5,7 @@
 @date: 2019/10/19
 
 """
-
+import os
 from tkinter import *
 from tkinter import simpledialog, messagebox, filedialog, dialog
 from tkinter import ttk
@@ -15,11 +15,31 @@ from email.mime.text import MIMEText
 from email.header import Header
 from smtplib import SMTP_SSL, SMTP
 from email.utils import parseaddr, formataddr
+from email.mime.multipart import MIMEMultipart
 import time
+import webbrowser
+
+settings_file = 'settings.yaml'
+
+
+def compute_x_y(master, width, height):
+    """计算组件的居中坐标
+
+    :param master:
+    :param width:
+    :param height:
+    :return:
+    """
+
+    ws = master.winfo_screenwidth()
+    hs = master.winfo_screenheight()
+    x = int((ws / 2) - (width / 2))
+    y = int((hs / 2) - (height / 2))
+    return f'{width}x{height}+{x}+{y}'
 
 
 class SettingsDialog(Toplevel):
-    """应用设置对话框"""
+    """设置对话框"""
 
     # 定义构造方法
     def __init__(self, parent, title=None):
@@ -29,7 +49,6 @@ class SettingsDialog(Toplevel):
         if title:
             self.title(title)
         self.parent = parent
-        self.result = None
         # 创建对话框的主体内容
         frame = Frame(self)
 
@@ -38,8 +57,6 @@ class SettingsDialog(Toplevel):
         self.init_buttons()
         # 设置为模式对话框
         self.grab_set()
-        if not self.initial_focus:
-            self.initial_focus = self
         # 为"WM_DELETE_WINDOW"协议使用self.cancel_click事件处理方法
         self.protocol("WM_DELETE_WINDOW", self.cancel_click)
         # 根据父窗口来设置对话框的位置
@@ -89,7 +106,7 @@ class SettingsDialog(Toplevel):
         print('确定')
         # 如果不能通过校验，让用户重新输入
         if not self.validate():
-            self.initial_focus.focus_set()
+            self.focus_set()
             return
         self.withdraw()
         self.update_idletasks()
@@ -109,12 +126,13 @@ class SettingsDialog(Toplevel):
 
 
 class Application(Frame):
-    """主应用类"""
+    """主窗口"""
 
     def __init__(self, master=None):
         Frame.__init__(self, master)
         self.pack()
         self.init_widgets()
+        self.mail_recipients = None
 
     def init_widgets(self):
         # 创建menubar，它被放入self.master中
@@ -126,70 +144,158 @@ class Application(Frame):
         menubar.add_cascade(label='设置', menu=settings_menu)
         settings_menu.add_command(label="SMTP", command=self.open_settings)
 
-        # 创建Entry组件
-        self.entry = ttk.Entry(self.master, width=44)
-        self.entry.pack()
+        mail_lbs = ['邮件主题', '附件', '邮件内容(HTML)']
+        for i, mail_lb in enumerate(mail_lbs):
+            # 邮件主题标签
+            lb = Label(self.master, text=mail_lb)
+            lb.place(x=65, y=18 + i * 30)
 
-        quit_button = ttk.Button(self, text='quit')
+        # 邮件主题的输入框
+        self.mail_subject = ttk.Entry(self.master, width=40)
+        self.mail_subject.place(x=150, y=17)
 
-        quit_button['command'] = self.quit
-        quit_button.pack({"side": "left"})
+        # 附件的输入框
+        self.mail_attach_in = StringVar()
+        ttk.Entry(self.master, width=30, textvariable=self.mail_attach_in).place(x=150, y=47)
+        # 浏览文件按钮
+        ttk.Button(self.master, text='浏览', command=self.choose_attachments).place(x=433, y=47)
 
-        settings_button = ttk.Button(self, text='settings', command=self.open_settings)
-        settings_button.pack({"side": "left"})
+        # 添加编辑器链接
+        editor_link = Label(self.master, text='点击编辑HTML', fg='blue')
+        editor_link.place(x=422, y=78)
+        editor_link.bind('<Button-1>', self.open_editor)
 
+        self.mail_content = Text(self.master, width=63, height=15)
+        self.mail_content.config(highlightbackground='#D3D3D3')
+        self.mail_content.place(x=70, y=105)
 
-        # 创建2个按钮，并为之绑定事件处理函数
-        ttk.Button(self.master, text='设置', command=self.open_settings).pack(side=LEFT, ipadx=5, ipady=5, padx=10)
+        # 预览按钮
+        ttk.Button(self.master, text='预览', command=self.preview).place(x=70, y=315)
+
+        # 导入收件人列表按钮
+        ttk.Button(self.master, text='导入收件人列表', command=self.import_mails).place(x=180, y=315)
+
+        # 推送按钮
+        ttk.Button(self.master, text='开始推送', command=self.send_mails).place(x=330, y=315)
+
+        # 推送进度条
+        self.push_progress = ttk.Progressbar(self.master, orient="horizontal", length=448, mode="determinate")
+        self.push_progress['value'] = 0
+
+    def open_editor(self, event):
+        editor_url = 'https://wysiwyg.ncucoder.com'
+        webbrowser.open(editor_url)
 
     def import_mails(self):
-        file = filedialog.askopenfile(title='导入邮箱列表', filetypes=[('文本文件', '*.txt'), ('CSV文件', '*.csv'), ('xlsx文件', '*.xlsx')])
-        print(file.read())
+        """导入邮箱列表"""
+
+        file = filedialog.askopenfile(title='导入邮箱列表',
+                                      filetypes=[('文本文件', '*.txt'), ('CSV文件', '*.csv'), ('xlsx文件', '*.xlsx')])
+        self.mail_recipients = file.read().split('\n')
+        print(self.mail_recipients)
+
+    def choose_attachments(self):
+        self.attachments = filedialog.askopenfiles(title='添加邮件附件')
+        files = ''
+        for i, attachment in enumerate(self.attachments):
+            files += attachment.name
+            if i != len(self.attachments) - 1:
+                files += ';'
+        self.mail_attach_in.set(files)
 
     def open_settings(self):
-        print('open settings')
+        """打开设置"""
+
         d = SettingsDialog(self.master, title='模式对话框')  # 默认是模式对话框
 
-    def send_mails(self, recipients, subject, content, settings=None):
-        """发送邮件
+    def preview(self):
+        self.send_mails(preview=True)
 
-        :param recipients: set, 收件人列表
-        :param subject: str, 邮件主题
-        :param content: str, 邮件内容
-        :param settings: dict, 配置信息
-        :return:
-        """
+    def send_mails(self, preview=False):
+        """发送邮件"""
 
-        # mail content
-        message = MIMEText(content, 'html', 'utf-8')
-        # mail recipient
-        message['From'] = self._format_addr('%s <%s>' % (settings['mail_name'], settings['mail_user']))
-        # mail subject
-        message['Subject'] = Header(subject, 'utf-8').encode()
+        # 获取用户配置
+        with open(settings_file, 'r') as f:
+            settings = yaml.load(f, Loader=yaml.FullLoader)
 
-        host_port = (settings['mail_host'], settings['mail_port'])
-        smtp = SMTP_SSL(*host_port) if settings['use_ssh'] else SMTP(*host_port)
-
+        host_port = (settings['host'], settings['port'])
+        smtp = SMTP_SSL(*host_port) if settings['ssh'] else SMTP(*host_port)
         try:
             # smtp.set_debuglevel(1)
-            smtp.login(settings['mail_user'], settings['mail_pass'])
+            smtp.login(settings['user'], settings['pass'])
+        except smtplib.SMTPException as e:
+            self.open_simpledialog('SMTP设置有误', str(e))
+
+        subject = self.mail_subject.get()
+        content = self.mail_content.get(1.0, END)
+
+        root_msg = MIMEMultipart()
+        # 发件人
+        root_msg['From'] = self._format_addr(f'{settings["name"]} <{settings["user"]}>')
+        # 邮件主题
+        root_msg['Subject'] = Header(subject, 'utf-8').encode()
+
+        # 邮件内容
+        html_message = MIMEText(content, 'html', 'utf-8')
+        root_msg.attach(html_message)
+
+        # 附件
+        if self.mail_attach_in.get():
+            try:
+                for attachment_path in self.mail_attach_in.get().split(';'):
+                    att = MIMEText(open(attachment_path, 'rb').read(), 'base64', 'utf-8')
+                    att['Content-Type'] = 'application/octet-stream'
+                    att['Content-Disposition'] = f'attachment;filename="{attachment_path.split(os.path.sep).pop()}"'
+                    root_msg.attach(att)
+            except FileNotFoundError as e:
+                self.open_simpledialog('邮件推送', str(e))
+
+        if preview:
+            root_msg['To'] = Header(settings['user'], 'utf-8').encode()
+            try:
+                # 发送邮件
+                smtp.sendmail(settings['user'], settings['user'], root_msg.as_string())
+                self.open_simpledialog('预览', '发送成功')
+            except smtplib.SMTPException as e:
+                self.open_simpledialog('预览', '发送失败: ' + str(e))
+        else:
+            # Todo: 显示推送成功与失败的列表
             success_mails = []
             failed_mails = []
 
-            for recipient in recipients:
-                message['To'] = Header(recipient, 'utf-8').encode()
+            recipients_count = len(self.mail_recipients)
+            # 设置进度条的最大值
+            self.push_progress['maximum'] = recipients_count
+            # 显示进度条
+            self.push_progress.place(x=70, y=350)
+            self.push_progress.update()
+
+            if not self.mail_recipients:
+                self.open_simpledialog('邮件推送', '没有导入收件人列表')
+                return
+
+            for i, recipient in enumerate(self.mail_recipients):
+                root_msg['To'] = Header(recipient, 'utf-8').encode()
                 try:
-                    # send mail
-                    smtp.sendmail(settings['mail_user'], [recipient], message.as_string())
+                    # 发送邮件
+                    smtp.sendmail(settings['user'], [recipient], root_msg.as_string())
                     success_mails.append(recipient)
+                    # 发送延时
+                    if i != recipients_count - 1:
+                        time.sleep(settings['delay'])
                 except smtplib.SMTPException as e:
                     failed_mails.append(dict(to=recipient, error=str(e)))
-                # delay time before send the next mail
-                time.sleep(settings['mail_delay'])
-        except smtplib.SMTPException as e:
-            print(e)
-            # 跳出对话框显示错误
-        finally:
+                finally:
+                    # 更新进度条
+                    self.push_progress['value'] += 1
+                    self.push_progress.update()
+
+            self.open_simpledialog('邮件推送', f'推送成功: {len(success_mails)} 封\n推送失败: {len(failed_mails)} 封')
+
+            # 删除进度条
+            self.push_progress.place_forget()
+            # 重置进度条
+            self.push_progress['value'] = 0
             smtp.quit()
 
     @staticmethod
@@ -201,37 +307,32 @@ class Application(Frame):
         name, addr = parseaddr(s)
         return formataddr((Header(name, 'utf-8').encode(), addr))
 
-    def center_window(self, width, height, root=None):
-        """设置窗口大小并居中
+    def open_simpledialog(self, title, msg):
+        """显示对话框
 
-        :param width: int
-        :param height: int
-        :param root: Tkinter.Tk()
+        Refer: http://c.biancheng.net/view/2523.html
+
+        :param title: 对话框标题
+        :param msg: 对话框内容
         :return:
         """
-
-        if root is None:
-            root = self.master
-        # 获取屏幕 宽、高
-        ws = root.winfo_screenwidth()
-        hs = root.winfo_screenheight()
-        # 计算 x, y 位置
-        x = (ws / 2) - (width / 2)
-        y = (hs / 2) - (height / 2)
-        # 设置窗口的大小和位置
-        # width x height + x_offset + y_offset
-        root.geometry('%dx%d+%d+%d' % (width, height, x, y))
+        d = simpledialog.SimpleDialog(self.master, title=title, text=msg, cancel=3, default=0)
+        d.root.geometry(compute_x_y(self.master, 240, 100))
+        d.root.grab_set()
+        d.root.wm_resizable(width=False, height=False)
+        d.go()
 
 
 if __name__ == '__main__':
     # 创建Tk对象, Tk代表窗口
-    win = Tk()
+    root = Tk()
     # 设置窗口标题
-    win.title('特邮')
+    root.title('特邮')
     # 禁止改变窗口大小
-    win.resizable(width=False, height=False)
+    root.resizable(width=False, height=False)
+    root.geometry(compute_x_y(root, 600, 400))
 
-    app = Application(master=win)
-    app.center_window(600, 400)
+    app = Application(master=root)
+
     # 启动主窗口的消息循环
     app.mainloop()

@@ -2,15 +2,19 @@
 
 基于 `Tkinter` 开发的邮件推送桌面应用, 支持 `Mac/ Windows`.
 
+## 待做
+
+* [ ] 应用设置-SMTP
+
 ## 开发
 
 ```bash
 # 虚拟环境
-# pip install -U pipenv # Add to PATH
+# pip install --user pipenv # Add to PATH
 pipenv install --python 3.7
 
 # 运行
-./start.sh # ./start.bat
+./start.sh # ./start.batpip
 
 ```
 
@@ -24,6 +28,8 @@ pipenv install --python 3.7
 ./build2exe.bat
 
 ```
+
+## 应用设置
 
 ```yaml
 mail:
